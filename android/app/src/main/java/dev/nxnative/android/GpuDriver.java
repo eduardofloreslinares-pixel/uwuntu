@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 /**
@@ -179,11 +180,10 @@ final class GpuDriver {
 
     private static boolean hasMeta(File zip) {
         if (zip.length() > 512L << 20) return false;
-        try (ZipInputStream z = new ZipInputStream(new FileInputStream(zip))) {
-            ZipEntry e;
-            while ((e = z.getNextEntry()) != null) if (new File(e.getName()).getName().equals("meta.json")) return true;
+        try (ZipFile z = new ZipFile(zip)) {
+            return z.stream().anyMatch(e -> !e.isDirectory()
+                    && new File(e.getName()).getName().equals("meta.json"));
         } catch (IOException | SecurityException e) { return false; }
-        return false;
     }
 
     /** adb (android/TESTING.md): am start … --es gpu_driver_zip <zip on the phone> installs and picks it; --es gpu_driver <folder name | system> picks an installed one */
@@ -223,7 +223,15 @@ final class GpuDriver {
     }
 
     private static void installDialog(Activity a, int request) {
-        List<File> zips = found(a);
+        new Thread(() -> {
+            List<File> zips = found(a);
+            a.runOnUiThread(() -> {
+                if (!a.isFinishing() && !a.isDestroyed()) showInstallDialog(a, request, zips);
+            });
+        }, "nx-driver-scan").start();
+    }
+
+    private static void showInstallDialog(Activity a, int request, List<File> zips) {
         List<String> labels = new ArrayList<>();
         for (File f : zips) labels.add(f.getName() + "  (" + f.getParentFile().getName() + ")");
         labels.add("Pick a zip…");
