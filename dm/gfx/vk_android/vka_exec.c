@@ -65,6 +65,7 @@ void mtl_set_frame(uint64_t f) {
     }
 }
 uint64_t vka_frame(void) { return g_frame; }
+uint64_t vka_trace_replay_frame(void) { return g_job_frame_set ? g_job_frame : g_frame; }
 void vka_exec_counts(uint64_t *ops, uint64_t *subs, uint64_t *rec_ns) { *ops = g_stat_ops; *subs = g_n_sub; *rec_ns = g_rec_ns; }
 void mtl_stats(uint64_t *passes, uint64_t *draws) { if (passes) *passes = g_stat_ops; if (draws) *draws = g_stat_draws; }
 void mtl_prepare(void) { vka_init(); }

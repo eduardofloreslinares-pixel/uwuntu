@@ -909,6 +909,37 @@ void vka_draw_prof(char *b, size_t n, double draws) {
     memset(g_ps, 0, sizeof g_ps);
     memset(g_pt, 0, sizeof g_pt);
 }
+// DM_VK_TREE_TRACE=<first replay frame>: trace eight consecutive frames.
+uint64_t vka_trace_replay_frame(void);
+static void trace_draw(vka_shader *const sh[], uint32_t count, uint32_t instances,
+                       uint32_t base, uint64_t indirect, int mesh, int indexed) {
+    static int start = -1;
+    static uint64_t last = UINT64_MAX;
+    static unsigned rows;
+    if (start < 0) {
+        const char *value = getenv("DM_VK_TREE_TRACE");
+        start = value ? atoi(value) : 0;
+        if (start < 0) start = 0;
+    }
+    if (!start) return;
+    uint64_t frame = vka_trace_replay_frame();
+    if (frame < (uint64_t)start || frame - (uint64_t)start >= 8) return;
+    if (frame != last) {
+        last = frame;
+        rows = 0;
+        VLOG("tree trace frame %llu begins", (unsigned long long)frame);
+    }
+    if (rows >= 128) {
+        if (rows++ == 128) VLOG("tree trace frame %llu truncated", (unsigned long long)frame);
+        return;
+    }
+    VLOG("tree trace frame=%llu draw=%u kind=%s vs=%016llx fs=%016llx task=%016llx mesh=%016llx count=%u instances=%u base=%u indirect=%#llx",
+         (unsigned long long)frame, ++rows, mesh ? "mesh" : indexed ? "indexed" : "arrays",
+         sh[0] ? (unsigned long long)sh[0]->key : 0ull, sh[1] ? (unsigned long long)sh[1]->key : 0ull,
+         sh[6] ? (unsigned long long)sh[6]->key : 0ull, sh[7] ? (unsigned long long)sh[7]->key : 0ull,
+         count, instances, base, (unsigned long long)indirect);
+}
+
 void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc, int has_sc, const p_draw *dw, const p_draw_idx *di) {
     if (!g_cb || !draws_on() || !statics()) { g_skipped++; return; }
     if (!d->inited) vka_dstate_reset(d);
@@ -1159,6 +1190,9 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
                    vk.vkCmdDrawIndexedIndirect(g_cb, b, o, 1, 20); }
         else vk.vkCmdDrawIndexed(g_cb, (uint32_t)di->count, inst, 0, di->base_vertex, binst);
     }
+    if (mesh || ind || inst > 1)
+        trace_draw(sh, ind ? 0 : (uint32_t)(dw ? dw->count : di->count),
+                   ind || mesh ? 0 : inst, ind ? 0 : binst, ind, mesh, di != NULL);
     g_draws++;
     PT(8);
     if (vka_nan_on() >= 2 && vka_nan_split(R.cim, R.nci)) vka_rp_end();   // DM_VK_NANSCAN=2: a scan inside the game's pass
