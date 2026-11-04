@@ -46,12 +46,41 @@ jobs:
           mkdir -p "$HOME/.android"
           printf '%s' "$BANANA_DEBUG_KEYSTORE_B64" | base64 --decode > "$HOME/.android/debug.keystore"
       - name: Native preparation engine and APK
+        env:
+          NX_SIGN_STORE_B64: ${{ secrets.NX_SIGN_STORE_B64 }}
+          NX_SIGN_ALIAS: ${{ secrets.NX_SIGN_ALIAS }}
+          NX_SIGN_PASS: ${{ secrets.NX_SIGN_PASS }}
+          NX_SIGN_SHA256: ${{ vars.NX_SIGN_SHA256 }}
         run: |
           set -euo pipefail
+          : "${NX_SIGN_STORE_B64:?Set the NX_SIGN_STORE_B64 repository secret}"
+          : "${NX_SIGN_ALIAS:?Set the NX_SIGN_ALIAS repository secret}"
+          : "${NX_SIGN_PASS:?Set the NX_SIGN_PASS repository secret}"
+          : "${NX_SIGN_SHA256:?Set NX_SIGN_SHA256 to the APK certificate fingerprint}"
+          umask 077
+          export NX_SIGN_STORE="$RUNNER_TEMP/banana-signing.p12"
+          trap 'rm -f "$NX_SIGN_STORE"' EXIT
+          python3 -c 'import base64, os, pathlib; pathlib.Path(os.environ["NX_SIGN_STORE"]).write_bytes(base64.b64decode(os.environ["NX_SIGN_STORE_B64"], validate=True))'
+          unset NX_SIGN_STORE_B64
           stage="$RUNNER_TEMP/banana-pack"
           android/ondevice/build.sh "$stage"
           cd android/app
           ./gradlew --no-daemon "-PnxPackStage=$stage/stage" "-PnxGames=$NX_GAMES" apk
+      - name: Verify APK certificate
+        env:
+          NX_SIGN_SHA256: ${{ vars.NX_SIGN_SHA256 }}
+        run: |
+          set -euo pipefail
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort | tail -n 1)"
+          test -n "$apksigner"
+          "$apksigner" verify --print-certs android/app/out/nxnative-android.apk > "$RUNNER_TEMP/banana-cert.txt"
+          actual="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/banana-cert.txt")"
+          expected="$(printf '%s' "$NX_SIGN_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ || "$actual" != "$expected" ]]; then
+            echo "::error::APK signing certificate differs from NX_SIGN_SHA256"
+            exit 1
+          fi
+          echo "APK certificate SHA-256: $actual"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: banana-native-android

@@ -124,7 +124,7 @@ final class GpuDriver {
     }
 
     /** Unpacks a driver zip into gpu_drivers/<name from its meta.json>/ (replacing an earlier one of that name). Returns the driver, or throws with the reason. */
-    static Info install(Context c, InputStream zin, String fallbackName) throws IOException {
+    static synchronized Info install(Context c, InputStream zin, String fallbackName) throws IOException {
         File tmp = new File(root(c), ".installing");
         deleteTree(tmp);
         if (!tmp.mkdirs()) throw new IOException("cannot create " + tmp);
@@ -240,17 +240,43 @@ final class GpuDriver {
                 .setItems(labels.toArray(new String[0]), (d, w) -> {
                     if (w == zips.size() + 1) { DriverFetch.dialog(a, request); return; }
                     if (w == zips.size()) {
-                        a.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/zip"), request);
+                        try {
+                            a.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                                    .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), request);
+                        } catch (android.content.ActivityNotFoundException e) {
+                            Toast.makeText(a, "No file picker is available", Toast.LENGTH_LONG).show();
+                        }
                         return;
                     }
-                    try { Info i = install(a, zips.get(w)); select(a, i); Toast.makeText(a, "Installed and picked " + i.label(), Toast.LENGTH_LONG).show(); }
-                    catch (IOException | SecurityException e) { Toast.makeText(a, "Not installed: " + e.getMessage(), Toast.LENGTH_LONG).show(); }
+                    installAsync(a, () -> install(a, zips.get(w)));
                 }).setNegativeButton("Cancel", null).show();
     }
 
     /** The picker's result (MainActivity.onActivityResult) */
     static void picked(Activity a, Uri uri) {
-        try { Info i = install(a, uri); select(a, i); Toast.makeText(a, "Installed and picked " + i.label(), Toast.LENGTH_LONG).show(); }
-        catch (IOException | SecurityException e) { Toast.makeText(a, "Not installed: " + e.getMessage(), Toast.LENGTH_LONG).show(); }
+        if (uri != null) installAsync(a, () -> install(a, uri));
+    }
+
+    private interface InstallSource { Info install() throws IOException; }
+
+    private static void installAsync(Activity a, InstallSource source) {
+        AlertDialog wait = new AlertDialog.Builder(a).setMessage("Installing GPU driver…")
+                .setCancelable(false).show();
+        new Thread(() -> {
+            String message;
+            try {
+                Info i = source.install();
+                select(a, i);
+                message = "Installed and picked " + i.label();
+            } catch (IOException | RuntimeException e) {
+                message = "Not installed: " + e.getMessage();
+            }
+            String result = message;
+            a.runOnUiThread(() -> {
+                if (a.isFinishing() || a.isDestroyed()) return;
+                wait.dismiss();
+                Toast.makeText(a, result, Toast.LENGTH_LONG).show();
+            });
+        }, "nx-driver-install").start();
     }
 }

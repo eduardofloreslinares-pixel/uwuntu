@@ -26,7 +26,8 @@ if (nxLive && (nxPlay || nxApp)) throw new GradleException('nxLive builds the re
 def nxVersion = providers.gradleProperty('nxVersion').getOrElse('0.1-bringup')
 def nxVersionCode = providers.gradleProperty('nxVersionCode').getOrElse('1') as int
 def signStore = System.getenv('NX_SIGN_STORE'), signAlias = System.getenv('NX_SIGN_ALIAS'), signPass = System.getenv('NX_SIGN_PASS')
-if (nxLive && !(signStore && signAlias && signPass && new File(signStore).isFile()))
+def persistentSigning = signStore || signAlias || signPass
+if ((nxLive || persistentSigning) && !(signStore && signAlias && signPass && new File(signStore).isFile()))
     throw new GradleException('nxLive needs the release key: NX_SIGN_STORE (an existing keystore), NX_SIGN_ALIAS and NX_SIGN_PASS')
 def nxLabel = providers.gradleProperty('nxLabel').getOrElse(nxApp ? "Banana Native $nxApp" : '')
 // The build tag the launcher shows over the game and in its main screen, and writes as the first line of each game log: branch@commit[+dirty] and the build time
@@ -116,14 +117,14 @@ android {
         debug { manifest.srcFile 'src/ondevice/AndroidManifest.xml' }
     }
     signingConfigs {
-        if (nxLive) live { storeFile file(signStore); storePassword signPass; keyAlias signAlias; keyPassword signPass }
+        if (persistentSigning) live { storeFile file(signStore); storePassword signPass; keyAlias signAlias; keyPassword signPass }
     }
     buildTypes {
         debug { jniDebuggable true }
         release {
             minifyEnabled false
             debuggable !nxLive       // bring-up builds: run-as and the app's files stay reachable over adb; the release is not debuggable
-            signingConfig nxLive ? signingConfigs.live : signingConfigs.debug
+            signingConfig persistentSigning ? signingConfigs.live : signingConfigs.debug
         }
     }
     externalNativeBuild {

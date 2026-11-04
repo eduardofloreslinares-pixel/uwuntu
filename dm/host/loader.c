@@ -634,8 +634,11 @@ static void window_apply(module_t *m) {
     if (!strcmp(m->build_id, "d00e4f399e411d0613aa8d26b1c02fef")) {
         const char *test = getenv("DM_MKW_WINDOW_TEST");
         if (test && (!strcmp(test, "2560x1440") || !strcmp(test, "1280x720"))) {
-            const int low = !strcmp(test, "1280x720");
-            const uint32_t w = low ? 1280 : 2560, h = low ? 720 : 1440;
+            // The guest still draws and crops at up to 2560x1440. Keep the full image
+            // until its internal targets and viewport can be lowered together.
+            if (!strcmp(test, "1280x720"))
+                LOG("MKW window test: 720p crops the guest image; using 2560x1440");
+            const uint32_t w = 2560, h = 1440;
             static const uint32_t expected[] = {0x1e390028u, 0x1e390016u, 0xb90027e8u};
             const uint64_t off = 0xeffd14;
             if (off + sizeof expected > m->text_end || memcmp(m->base + off, expected, sizeof expected)) {
