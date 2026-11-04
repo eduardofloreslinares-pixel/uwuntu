@@ -73,8 +73,8 @@ jobs:
           set -euo pipefail
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort | tail -n 1)"
           test -n "$apksigner"
-          "$apksigner" verify --print-certs android/app/out/nxnative-android.apk > "$RUNNER_TEMP/banana-cert.txt"
-          actual="$(sed -nE 's/^[^:]*certificate SHA-256 digest:[[:space:]]*([0-9a-f]{64})[[:space:]]*$/\1/ip' "$RUNNER_TEMP/banana-cert.txt" | tr A-F a-f | sort -u)"
+          "$apksigner" verify --print-certs-pem android/app/out/nxnative-android.apk > "$RUNNER_TEMP/banana-cert.txt"
+          actual="$(python3 -c 'import hashlib, re, ssl, sys; pem = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", sys.stdin.read(), re.S); print("\n".join(sorted({hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert)).hexdigest() for cert in pem})))' < "$RUNNER_TEMP/banana-cert.txt")"
           expected="$(printf '%s' "$NX_SIGN_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
           echo "APK SHA-256: ${actual:-no detectado} | SHA-256 esperado: ${expected:-vacio}"
           if [[ ! "$expected" =~ ^[0-9a-f]{64}$ || "$actual" != "$expected" ]]; then
