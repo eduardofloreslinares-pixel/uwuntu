@@ -35,7 +35,7 @@ jobs:
           echo "ANDROID_NDK_HOME=$sdk/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "JAVA_HOME=${JAVA_HOME_17_X64:?JDK 17 not found}" >> "$GITHUB_ENV"
           printf 'sdk.dir=%s\n' "$sdk" > android/app/local.properties
-          sudo apt-get update && sudo apt-get install -y zsh ninja-build libperl-digest-sha
+          sudo apt-get update && sudo apt-get install -y zsh ninja-build libdigest-sha-perl
       - name: Native preparation engine and APK
         run: |
           set -euo pipefail
