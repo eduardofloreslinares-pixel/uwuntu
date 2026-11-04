@@ -3,6 +3,7 @@
 #include "dm.h"
 #include <signal.h>
 #include <dlfcn.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <stdatomic.h>
@@ -75,7 +76,11 @@ void crash_off(const char *tag, uint64_t a) {   // Also used by diag.c
     Dl_info di;
     if (m) fprintf(stderr, " %s%s%s+%#llx", tag, *tag ? "=" : "", m->name, a - (uint64_t)m->base);
     else if (dladdr((void *)a, &di) && di.dli_sname) fprintf(stderr, " %s%s%s+%#lx", tag, *tag ? "=" : "", di.dli_sname, (unsigned long)(a - (uint64_t)di.dli_saddr));
-    else fprintf(stderr, " %s%s%#llx", tag, *tag ? "=" : "", a);
+    else if (dladdr((void *)a, &di) && di.dli_fname && di.dli_fbase) {
+        const char *name = strrchr(di.dli_fname, '/');
+        fprintf(stderr, " %s%s%s+%#llx", tag, *tag ? "=" : "",
+                name ? name + 1 : di.dli_fname, (unsigned long long)(a - (uint64_t)di.dli_fbase));
+    } else fprintf(stderr, " %s%s%#llx", tag, *tag ? "=" : "", a);
 }
 // Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked.
 // Each frame is read with vm_read_overwrite, which fails instead of faulting: code built without frame pointers keeps data in x29 (STEINS;GATE RE:BOOT's main+0x38921c: x29 = 0x430),

@@ -285,6 +285,9 @@ void vks_queue_locked(uint32_t *nw, VkSemaphore *ws, uint64_t *wv, VkPipelineSta
         } else VRED_ONCE("sparse bind batch not built (no memory): the binds wait for the next submission");
         free(ii); free(oi); free(ib); free(ob);
     }
+    // Retry trimming after the GPU has had time to finish pending unbinds.
+    static uint32_t submissions;
+    if (!(++submissions & 63u)) blocks_trim();
     if (g_sval) { ws[*nw] = g_stl; wv[*nw] = g_sval; wst[*nw] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT; (*nw)++; }
     pthread_mutex_unlock(&g_ks);
 }
