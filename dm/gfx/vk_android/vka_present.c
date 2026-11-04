@@ -464,6 +464,16 @@ void vka_present_fill(uint64_t tk, const tex_t *t, double period_s, const int cr
     pthread_mutex_lock(&g_pmu);
     if (!g_thread_up || tk <= g_pq_fill) { pthread_mutex_unlock(&g_pmu); return; }
     pq_item *it = &g_pq[(tk - 1) % PQ];
+    // A window size override can leave the game's crop outside the texture.
+    if (crop && (crop[2] || crop[3]) &&
+        (crop[0] < 0 || crop[1] < 0 || crop[2] <= 0 || crop[3] <= 0 ||
+         (int64_t)crop[0] + crop[2] > t->d.width ||
+         (int64_t)crop[1] + crop[3] > t->d.height)) {
+        VRED_ONCE("present crop %d,%d %dx%d outside %ux%u; using the full texture",
+                  crop[0], crop[1], crop[2], crop[3],
+                  (unsigned)t->d.width, (unsigned)t->d.height);
+        crop = NULL;
+    }
     it->t = *t; it->period = period_s; it->has_crop = crop != NULL; if (crop) memcpy(it->crop, crop, sizeof it->crop);
     // The last submission handed to the queue, not the last fence reserved: a submission another thread is still recording (its fence taken at the top of mtl_sub_commit) would
     // be queued after this copy, which then waits for it forever (a wait-before-signal on one queue). On the Adreno 840 phone that froze the queue while the first level loaded

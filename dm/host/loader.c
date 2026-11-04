@@ -633,7 +633,9 @@ static void window_apply(module_t *m) {
     // MKW 1.8.0 converts the dimensions before sizing the window pool.
     if (!strcmp(m->build_id, "d00e4f399e411d0613aa8d26b1c02fef")) {
         const char *test = getenv("DM_MKW_WINDOW_TEST");
-        if (test && !strcmp(test, "2560x1440")) {
+        if (test && (!strcmp(test, "2560x1440") || !strcmp(test, "1280x720"))) {
+            const int low = !strcmp(test, "1280x720");
+            const uint32_t w = low ? 1280 : 2560, h = low ? 720 : 1440;
             static const uint32_t expected[] = {0x1e390028u, 0x1e390016u, 0xb90027e8u};
             const uint64_t off = 0xeffd14;
             if (off + sizeof expected > m->text_end || memcmp(m->base + off, expected, sizeof expected)) {
@@ -641,9 +643,9 @@ static void window_apply(module_t *m) {
                 return;
             }
             uint32_t *ins = (uint32_t *)(m->base + off);
-            ins[0] = 0x52800008u | (1440u << 5);  // movz w8, #1440 (height)
-            ins[1] = 0x52800016u | (2560u << 5);  // movz w22, #2560 (width)
-            LOG("MKW window test: requesting 2560x1440 before window pool sizing");
+            ins[0] = 0x52800008u | (h << 5);  // movz w8, #height
+            ins[1] = 0x52800016u | (w << 5);  // movz w22, #width
+            LOG("MKW window test: requesting %ux%u before window pool sizing", w, h);
             return;
         }
     }
