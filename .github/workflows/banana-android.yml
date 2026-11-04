@@ -74,7 +74,7 @@ jobs:
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort | tail -n 1)"
           test -n "$apksigner"
           "$apksigner" verify --print-certs android/app/out/nxnative-android.apk > "$RUNNER_TEMP/banana-cert.txt"
-          actual="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/banana-cert.txt")"
+          actual="$(sed -nE 's/^[^:]*certificate SHA-256 digest:[[:space:]]*([0-9a-f]{64})[[:space:]]*$/\1/ip' "$RUNNER_TEMP/banana-cert.txt" | tr A-F a-f | sort -u)"
           expected="$(printf '%s' "$NX_SIGN_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
           echo "APK SHA-256: ${actual:-no detectado} | SHA-256 esperado: ${expected:-vacio}"
           if [[ ! "$expected" =~ ^[0-9a-f]{64}$ || "$actual" != "$expected" ]]; then
