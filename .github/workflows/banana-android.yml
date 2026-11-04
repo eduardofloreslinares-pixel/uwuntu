@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   apk:
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       NX_GAMES: ${{ inputs.games }}
@@ -28,14 +28,14 @@ jobs:
       - name: Android tools
         run: |
           set -euo pipefail
-          sdk="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+          sdk="${ANDROID_HOME:?Android SDK not found}"
           sdkmanager="$sdk/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$sdkmanager" ]; then sdkmanager="$(command -v sdkmanager)"; fi
           "$sdkmanager" "platforms;android-36" "ndk;$NDK_VERSION" "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$sdk/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
-          echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=${JAVA_HOME_17_X64:?JDK 17 not found}" >> "$GITHUB_ENV"
           printf 'sdk.dir=%s\n' "$sdk" > android/app/local.properties
-          command -v ninja || brew install ninja
+          sudo apt-get update && sudo apt-get install -y zsh ninja-build libperl-digest-sha
       - name: Native preparation engine and APK
         run: |
           set -euo pipefail
