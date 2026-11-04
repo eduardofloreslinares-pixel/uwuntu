@@ -630,6 +630,23 @@ static void map_image(module_t *m, const char *dir) {
 // seal), and after checking each function's shape: fixed addresses never run on another build. Not on iOS: the text is embedded there as signed code (map_image above)
 static void window_apply(module_t *m) {
     if (strcmp(m->name, "main") || m->nro) return;
+    // MKW 1.8.0 converts the dimensions before sizing the window pool.
+    if (!strcmp(m->build_id, "d00e4f399e411d0613aa8d26b1c02fef")) {
+        const char *test = getenv("DM_MKW_WINDOW_TEST");
+        if (test && !strcmp(test, "2560x1440")) {
+            static const uint32_t expected[] = {0x1e390028u, 0x1e390016u, 0xb90027e8u};
+            const uint64_t off = 0xeffd14;
+            if (off + sizeof expected > m->text_end || memcmp(m->base + off, expected, sizeof expected)) {
+                LOG("[RED] MKW window test: unexpected instructions at main+0xeffd14");
+                return;
+            }
+            uint32_t *ins = (uint32_t *)(m->base + off);
+            ins[0] = 0x52800008u | (1440u << 5);  // movz w8, #1440 (height)
+            ins[1] = 0x52800016u | (2560u << 5);  // movz w22, #2560 (width)
+            LOG("MKW window test: requesting 2560x1440 before window pool sizing");
+            return;
+        }
+    }
     const char *e = getenv("DM_WINDOW_SIZE");
     static const struct { const char *build; uint64_t wfn, hfn; unsigned w, h; } rows[] = DM_GAME_WINDOW_FN;
     int r = -1, own = !e || !*e || !strcmp(e, "original");
