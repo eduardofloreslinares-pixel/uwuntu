@@ -76,6 +76,7 @@ jobs:
           "$apksigner" verify --print-certs android/app/out/nxnative-android.apk > "$RUNNER_TEMP/banana-cert.txt"
           actual="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/banana-cert.txt")"
           expected="$(printf '%s' "$NX_SIGN_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+          echo "APK SHA-256: ${actual:-no detectado} | SHA-256 esperado: ${expected:-vacio}"
           if [[ ! "$expected" =~ ^[0-9a-f]{64}$ || "$actual" != "$expected" ]]; then
             echo "::error::APK signing certificate differs from NX_SIGN_SHA256"
             exit 1
