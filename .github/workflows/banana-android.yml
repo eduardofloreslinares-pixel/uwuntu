@@ -1,0 +1,50 @@
+name: Banana Native Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: Comma-separated title IDs from dm/games
+        default: '040074A01BF12000,0400C3F00006E000'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      NX_GAMES: ${{ inputs.games }}
+      NDK_VERSION: 28.2.13676358
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          dotnet-version: '10.0.x'
+      - name: Android tools
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+          sdkmanager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then sdkmanager="$(command -v sdkmanager)"; fi
+          "$sdkmanager" "platforms;android-36" "ndk;$NDK_VERSION" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$sdk/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$GITHUB_ENV"
+          printf 'sdk.dir=%s\n' "$sdk" > android/app/local.properties
+          command -v ninja || brew install ninja
+      - name: Native preparation engine and APK
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/banana-pack"
+          android/ondevice/build.sh "$stage"
+          cd android/app
+          ./gradlew --no-daemon "-PnxPackStage=$stage/stage" "-PnxGames=$NX_GAMES" apk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: banana-native-android
+          path: android/app/out/*.apk
+          if-no-files-found: error
