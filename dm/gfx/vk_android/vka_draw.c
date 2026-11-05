@@ -956,10 +956,10 @@ static void trace_draw(vka_shader *const sh[], uint32_t count, uint32_t instance
 
 // DM_VK_MDI_TRACE=<first replay frame>: sample up to four groups in each
 // of eight frames. Copy before the CPU gate, including rejected groups.
-enum { MDI_SAMPLES = 64, MDI_WORDS = 6 };
+enum { MDI_SAMPLES = 64, MDI_COMMANDS = 256, MDI_WORDS = 1 + 5 * MDI_COMMANDS };
 typedef struct {
     uint64_t frame, addr, indirect;
-    uint32_t cpu, slot;
+    uint32_t cpu, slot, commands;
     int readable, indexed, has_args;
 } mdi_sample;
 static vka_span g_mdi_buffer;
@@ -976,6 +976,14 @@ static void mdi_trace_done(void *arg) {
          s->readable, s->cpu, words[0], (unsigned long long)s->indirect,
          s->indexed, s->has_args, words[1], words[2], words[3],
          s->indexed ? (int32_t)words[4] : 0, words[s->indexed ? 5 : 4]);
+    uint32_t n = words[0] < s->commands ? words[0] : s->commands;
+    if (s->has_args) for (uint32_t i = 0; i < n; i++) {
+        const uint32_t *a = words + 1 + 5 * i;
+        VLOG("mdi command frame=%llu group=%u record=%u elements=%u instances=%u first=%u base_vertex=%d base_instance=%u",
+             (unsigned long long)s->frame, s->slot, i, a[0], a[1], a[2],
+             s->indexed ? (int32_t)a[3] : 0, a[s->indexed ? 4 : 3]);
+    }
+    if (words[0] > s->commands) VLOG("mdi commands truncated: %u of %u copied", s->commands, words[0]);
 }
 
 void vka_mdi_trace_commit(uint64_t fence, int submitted) {
@@ -985,7 +993,7 @@ void vka_mdi_trace_commit(uint64_t fence, int submitted) {
     }
 }
 
-static void mdi_trace(uint64_t addr, uint64_t ind, int indexed, int readable, uint32_t cpu) {
+static void mdi_trace(uint64_t addr, uint64_t ind, int indexed, int readable, uint32_t cpu, uint32_t max, uint32_t stride) {
     static int start = -1;
     static uint64_t last = UINT64_MAX;
     static unsigned rows;
@@ -1004,22 +1012,27 @@ static void mdi_trace(uint64_t addr, uint64_t ind, int indexed, int readable, ui
     VkDeviceSize off, arg_off;
     if (!vka_addr(addr, 4, &src, &off, NULL) || (off & 3)) return;
     unsigned arg_bytes = indexed ? 20 : 16;
-    int has_args = ind && vka_addr(ind, arg_bytes, &args, &arg_off, NULL) && !(arg_off & 3);
+    uint32_t commands = max < MDI_COMMANDS ? max : MDI_COMMANDS;
+    if (!commands || stride < arg_bytes || (stride & 3)) return;
+    uint64_t span = (uint64_t)(commands - 1) * stride + arg_bytes;
+    int has_args = ind && vka_addr(ind, span, &args, &arg_off, NULL) && !(arg_off & 3);
     if (!g_mdi_buffer.buf) {
         if (!vka_static(sizeof(uint32_t) * MDI_SAMPLES * MDI_WORDS, 4, &g_mdi_buffer)) return;
         memset(g_mdi_buffer.ptr, 0, sizeof(uint32_t) * MDI_SAMPLES * MDI_WORDS);
     }
     unsigned slot = g_mdi_next++;
     rows++;
-    g_mdi_samples[slot] = (mdi_sample){frame, addr, ind, cpu, slot, readable, indexed, has_args};
+    g_mdi_samples[slot] = (mdi_sample){frame, addr, ind, cpu, slot, commands, readable, indexed, has_args};
     VkDeviceSize dst = g_mdi_buffer.off + slot * MDI_WORDS * sizeof(uint32_t);
     vka_rp_end();
     vka_barrier(g_cb);
     VkBufferCopy c = {off, dst, 4};
     vk.vkCmdCopyBuffer(g_cb, src, g_mdi_buffer.buf, 1, &c);
     if (has_args) {
-        c = (VkBufferCopy){arg_off, dst + 4, arg_bytes};
-        vk.vkCmdCopyBuffer(g_cb, args, g_mdi_buffer.buf, 1, &c);
+        VkBufferCopy regions[MDI_COMMANDS];
+        for (uint32_t i = 0; i < commands; i++)
+            regions[i] = (VkBufferCopy){arg_off + (VkDeviceSize)i * stride, dst + 4 + (VkDeviceSize)i * 20, arg_bytes};
+        vk.vkCmdCopyBuffer(g_cb, args, g_mdi_buffer.buf, commands, regions);
     }
 }
 
@@ -1048,7 +1061,7 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
             mdi_max = max;
             mdi_stride = stride;
             if (tree_live_frame(vka_trace_replay_frame()))
-                mdi_trace(mdi, address, di != NULL, 0, 0);
+                mdi_trace(mdi, address, di != NULL, 0, 0, max, stride);
         } else {
             VRED_ONCE("GPU indirect count unavailable for a group; using the CPU fallback");
         }
@@ -1056,7 +1069,10 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
     if (mdi && !mdi_max) {
         uint32_t cnt = 0;
         int readable = cpu_read(mdi, &cnt, 4);
-        if (!mdi_i) mdi_trace(mdi, dw ? dw->ind : di->ind, di != NULL, readable, cnt);
+        if (!mdi_i) {
+            uint32_t group = (uint32_t)(dw ? dw->pad : di->pad);
+            mdi_trace(mdi, dw ? dw->ind : di->ind, di != NULL, readable, cnt, group >> 16, group & 0xffffu);
+        }
         if (!readable || (uint32_t)mdi_i >= cnt) return;
         VRED_ONCE("indirect-count multi-draws read their count on the CPU at replay");
     }
