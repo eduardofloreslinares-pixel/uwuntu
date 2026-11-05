@@ -193,9 +193,48 @@ static void single_lane(uint64_t key, int stage, uint32_t **w, size_t *nb) {
                                                             stage == DMSH_VK_STAGE_GS && V.driver_id == VK_DRIVER_ID_MESA_TURNIP ? "Turnip's geometry stage (DM_VK_SUBGROUP_GS)" : V.subgroup_stages & g_stage_bit[stage] ? "the device's subgroup size in this stage is not the library's and cannot be pinned" : "the device has none in this stage");
     free(*w); *w = o; *nb = on * 4;
 }
-static VkShaderModule spv_module(const vka_shlib *L, const dmsh_vk_entry *e, const dmsh_vk_module *m, uint64_t key, const char **why, char *err, size_t errn) {
+// Port of nxnative's first_store ordering for three verified MKW Vulkan modules.
+static uint8_t mkw_first_store(const vka_shader *s, uint32_t *words, size_t bytes) {
+    static const struct {
+        uint64_t key, hash;
+        uint32_t bytes;
+        uint16_t stores[4];
+        uint8_t count, binding, slot;
+    } plans[] = {
+        {UINT64_C(0x2ce9071c2f22d74f), UINT64_C(0x2bab9b8b61652c4a), 42792, {2314, 2438, 2562, 2678}, 4, 2, 2},
+        {UINT64_C(0x5fea9b7ddb30e8a8), UINT64_C(0x960acc6ba9395246), 42880, {2322, 2446, 2570, 2686}, 4, 2, 2},
+        {UINT64_C(0x0823b08c2027a38d), UINT64_C(0x101b316c46a5364f), 42184, {2852}, 1, 8, 0},
+    };
+    for (size_t i = 0; i < sizeof plans / sizeof plans[0]; i++) {
+        if (s->key != plans[i].key) continue;
+        if (bytes != plans[i].bytes) break;
+        uint64_t hash = UINT64_C(0xcbf29ce484222325);
+        const uint8_t *data = (const uint8_t *)words;
+        for (size_t j = 0; j < bytes; j++) hash = (hash ^ data[j]) * UINT64_C(0x100000001b3);
+        if (hash != plans[i].hash) break;
+        int bound = 0;
+        for (unsigned j = 0; j < s->e->bind_count; j++) {
+            const dmsh_vk_bind *b = &s->b[j];
+            if (!b->set && b->binding == plans[i].binding &&
+                b->kind == DMSH_VK_KIND_SBUF && b->reg == plans[i].slot) bound = 1;
+        }
+        if (!bound) break;
+        // Keep instruction offsets and control flow unchanged. Each removed OpStore
+        // occupies three words, replaced by three one-word OpNop instructions.
+        for (unsigned j = 0; j < plans[i].count; j++)
+            if (words[plans[i].stores[j]] != (3u << 16 | 62u)) return 0;
+        for (unsigned j = 0; j < plans[i].count; j++)
+            for (unsigned k = 0; k < 3; k++) words[plans[i].stores[j] + k] = 1u << 16;
+        return (uint8_t)(plans[i].slot == 2 ? 1 : 2);
+    }
+    return 0;
+}
+
+static VkShaderModule spv_module(const vka_shlib *L, const dmsh_vk_entry *e, const dmsh_vk_module *m, uint64_t key, const char **why, char *err, size_t errn, vka_shader *owner) {
     size_t nb = 0; uint32_t *w = vka_shlib_spirv(L, m, &nb, err, errn);
     if (!w) { *why = err; return VK_NULL_HANDLE; }
+    if (owner && e->stage == DMSH_VK_STAGE_CS && VKA_ENV("DM_VK_MKW_FIRST_STORE", 1))
+        owner->first_store = mkw_first_store(owner, w, nb);
     if (e->flags & DMSH_VK_F_SUBGROUP) single_lane(key, e->stage, &w, &nb);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nb, .pCode = w};
     VkShaderModule mod = VK_NULL_HANDLE; VkResult r = vk.vkCreateShaderModule(V.dev, &ci, NULL, &mod);
@@ -209,7 +248,7 @@ VkShaderModule vka_shader_module(vka_shader *s, int variant) {
     const dmsh_vk_module *m = vka_shlib_module(s->lib, s->e, variant);
     if (!m) return VK_NULL_HANDLE;
     const char *why = NULL; char err[256];
-    VkShaderModule mod = spv_module(s->lib, s->e, m, s->key, &why, err, sizeof err);
+    VkShaderModule mod = spv_module(s->lib, s->e, m, s->key, &why, err, sizeof err, NULL);
     if (!mod) { static _Atomic int n; if (atomic_fetch_add(&n, 1) < 8) VRED("shader %016llx variant %d: %s", (unsigned long long)s->key, variant, why); return VK_NULL_HANDLE; }
     pthread_mutex_lock(&g_mu);
     if (s->mods[variant]) { pthread_mutex_unlock(&g_mu); vk.vkDestroyShaderModule(V.dev, mod, NULL); return s->mods[variant]; }
@@ -313,7 +352,7 @@ vka_shader *vka_shader_make(const vka_shlib *L, uint64_t key) {
         why = refusal(L, e);
         const dmsh_vk_module *m = why ? NULL : vka_shlib_module(L, e, DMSH_VK_MOD_BASE);
         if (!why && !m) why = "no base module";
-        if (m) s->mods[DMSH_VK_MOD_BASE] = spv_module(L, e, m, key, &why, err, sizeof err);
+        if (m) s->mods[DMSH_VK_MOD_BASE] = spv_module(L, e, m, key, &why, err, sizeof err, s);
         if (!why && e->stage == DMSH_VK_STAGE_GS && VKA_ENV("DM_VK_GS_CLAIM", 1)) {   // memory writes: made once per primitive (vka_spv_gs_claim)
             char e2[256] = ""; s->gs_fx = gs_words(s, NULL, NULL, e2, sizeof e2);
             if (s->gs_fx < 0) VRED("geometry shader %016llx: memory writes not put under a claim (%s): drawn as it is, its writes repeated by the device's runs of each primitive", (unsigned long long)key, e2);

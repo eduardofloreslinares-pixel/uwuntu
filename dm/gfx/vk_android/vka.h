@@ -314,6 +314,8 @@ typedef struct vka_shader {
     struct vka_vinmod *fout;            // pixel modules with float outputs retyped for integer targets, by masks (vka_shader_fout_module)
     vka_span c1; VkDeviceSize c1_len;   // the c1 bytes in static memory (none when c1_len is 0)
     int bad;                            // refused: no module, an unknown binding, an NV-only capability (logged once with its key)
+    uint8_t first_store;                // MKW counter reset plan, set only for a verified patched module
+    uint8_t first_store_logged;
     int gs_fx;                          // a geometry shader's memory writes (vka_spv_gs_claim): above 0, its draws bind a claim buffer at VKA_GS_CLAIM_BINDING
     VkShaderModule gs_claim;            // its module with those writes under the per-primitive claim, made when a pipeline first asks
 } vka_shader;

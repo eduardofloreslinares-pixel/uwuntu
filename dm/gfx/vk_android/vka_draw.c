@@ -1036,6 +1036,56 @@ static void mdi_trace(uint64_t addr, uint64_t ind, int indexed, int readable, ui
     }
 }
 
+// Draw isolation for live visual A/B. An empty value restores every draw.
+static int draw_hidden(vka_shader *const sh[VKA_NSTAGE]) {
+    static uint32_t generation;
+    static uint64_t prefix, mask;
+    static int stage = -1, suspects, reported;
+    uint32_t current = atomic_load_explicit(&vka_env_gen, memory_order_relaxed);
+    if (generation != current) {
+        generation = current;
+        stage = -1;
+        suspects = reported = 0;
+        char value[32];
+        if (vka_env_str("DM_VK_DRAW_HIDE", value, sizeof value) && *value) {
+            if (!strcmp(value, "suspects")) {
+                suspects = 1;
+            } else {
+                const char *hex = strchr(value, ':');
+                if (hex) {
+                    size_t n = strlen(++hex);
+                    int target = !strncmp(value, "vs:", 3) ? 0 :
+                                 !strncmp(value, "fs:", 3) ? 1 :
+                                 !strncmp(value, "task:", 5) ? 6 :
+                                 !strncmp(value, "mesh:", 5) ? 7 : -1;
+                    if (target >= 0 && n && n <= 16 && strspn(hex, "0123456789abcdefABCDEF") == n) {
+                        unsigned shift = 4 * (16 - n);
+                        prefix = (uint64_t)strtoull(hex, NULL, 16) << shift;
+                        mask = UINT64_MAX << shift;
+                        stage = target;
+                    }
+                }
+                if (stage < 0) VLOG("draw isolation: invalid DM_VK_DRAW_HIDE value '%s'", value);
+            }
+        }
+    }
+    uint64_t vs = sh[0] ? sh[0]->key : 0;
+    int hidden = suspects ? (vs == UINT64_C(0xfb5fe7700661783f) ||
+                             vs == UINT64_C(0xa4fbd548709aefdc) ||
+                             vs == UINT64_C(0x50a275e9d32af1c7) ||
+                             vs == UINT64_C(0xe9806085093845df)) :
+                            (stage >= 0 && sh[stage] && (sh[stage]->key & mask) == prefix);
+    if (hidden && !reported) {
+        reported = 1;
+        VLOG("draw isolation: first match at frame %llu vs=%016llx fs=%016llx task=%016llx mesh=%016llx",
+             (unsigned long long)vka_trace_replay_frame(), (unsigned long long)vs,
+             sh[1] ? (unsigned long long)sh[1]->key : 0ull,
+             sh[6] ? (unsigned long long)sh[6]->key : 0ull,
+             sh[7] ? (unsigned long long)sh[7]->key : 0ull);
+    }
+    return hidden;
+}
+
 void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc, int has_sc, const p_draw *dw, const p_draw_idx *di) {
     if (!g_cb || !draws_on() || !statics()) { g_skipped++; return; }
     if (!d->inited) vka_dstate_reset(d);
@@ -1128,6 +1178,7 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
         else VRED_ONCE("geometry shader %016llx writes memory in an %s draw: drawn without the claim, its writes repeated by the device's runs of each primitive", (unsigned long long)sh[2]->key, ind ? "indirect" : "instanced");
     }
     if (expand && ind) SKIP("an indirect draw of quads or a line loop is not on Vulkan yet: skipped");
+    if (draw_hidden(sh)) { g_skipped++; return; }
 
     PT(1);
     // The last draw's shaders' layout (layouts live as long as the device): the layout table's lock and hash a draw
@@ -1384,6 +1435,26 @@ void vka_dispatch(vka_dstate *d, const p_dispatch *dp) {
     if (lg) VLOG("dispatch %llu: %016llx groups %d,%d,%d%s local %u,%u,%u shared %u flags %#x%s", di, (unsigned long long)sh[5]->key, dp->x, dp->y, dp->z, dp->ind ? " (indirect)" : "",
                  sh[5]->e->local[0], sh[5]->e->local[1], sh[5]->e->local[2], sh[5]->e->shared, sh[5]->e->flags, skip ? " SKIPPED" : "");
     if (skip) { vka_barrier(g_cb); g_dispatches++; return; }
+    if (sh[5]->first_store && (dp->ind || (dp->x > 0 && dp->y > 0 && dp->z > 0))) {
+        static const uint32_t reset[] = {0, 0, 1, 1};
+        const int scenery = sh[5]->first_store == 1;
+        const vka_range range = d->b.ssbo[5][scenery ? 2 : 0];
+        const uint64_t word_off = scenery ? 0 : 4;
+        const uint64_t bytes = scenery ? sizeof reset : sizeof reset[0];
+        VkBuffer buf;
+        VkDeviceSize off;
+        if (!range.addr || (range.size && range.size < word_off + bytes) ||
+            !vka_addr(range.addr + word_off, bytes, &buf, &off, NULL) || (off & 3))
+            SKIP("MKW counter reset: storage buffer for shader %016llx unavailable", (unsigned long long)sh[5]->key);
+        vka_barrier(g_cb);
+        vk.vkCmdUpdateBuffer(g_cb, buf, off, bytes, reset);
+        vka_barrier(g_cb);
+        if (!sh[5]->first_store_logged) {
+            sh[5]->first_store_logged = 1;
+            VLOG("MKW counter reset before shader %016llx (%s dispatch)",
+                 (unsigned long long)sh[5]->key, dp->ind ? "indirect" : "direct");
+        }
+    }
     vk.vkCmdBindPipeline(g_cb, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     if (dp->ind) vk.vkCmdDispatchIndirect(g_cb, ib, io);
     else if (dp->x > 0 && dp->y > 0 && dp->z > 0) {
