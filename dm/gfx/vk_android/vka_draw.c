@@ -1012,7 +1012,31 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
     if (!g_cb || !draws_on() || !statics()) { g_skipped++; return; }
     if (!d->inited) vka_dstate_reset(d);
     uint64_t mdi = dw ? dw->mdi_cnt : di->mdi_cnt; int mdi_i = dw ? dw->mdi_i : di->mdi_i;
-    if (mdi) {
+    VkBuffer mdi_args = VK_NULL_HANDLE, mdi_count = VK_NULL_HANDLE;
+    VkDeviceSize mdi_args_off = 0, mdi_count_off = 0;
+    uint32_t mdi_max = 0, mdi_stride = 0;
+    if (mdi && VKA_ENV("DM_VK_GPU_MDI", 0)) {
+        uint32_t group = (uint32_t)(dw ? dw->pad : di->pad);
+        uint32_t max = group >> 16, stride = group & 0xffffu;
+        uint32_t bytes = di ? 20 : 16;
+        uint64_t address = dw ? dw->ind : di->ind;
+        uint64_t delta = (uint64_t)(uint32_t)mdi_i * stride;
+        if ((di ? V.mdi_indexed != NULL : V.mdi_arrays != NULL) &&
+            (!di || di->itype != 0 || V.idx8) &&
+            max && max <= V.props.limits.maxDrawIndirectCount &&
+            (uint32_t)mdi_i < max && stride >= bytes && !(stride & 3) &&
+            address > delta && !(address & 3) &&
+            vka_addr(address - delta, (uint64_t)(max - 1) * stride + bytes,
+                     &mdi_args, &mdi_args_off, NULL) && !(mdi_args_off & 3) &&
+            vka_addr(mdi, 4, &mdi_count, &mdi_count_off, NULL) && !(mdi_count_off & 3)) {
+            if (mdi_i) return;   // already covered by the first record
+            mdi_max = max;
+            mdi_stride = stride;
+        } else {
+            VRED_ONCE("GPU indirect count unavailable for a group; using the CPU fallback");
+        }
+    }
+    if (mdi && !mdi_max) {
         uint32_t cnt = 0;
         int readable = cpu_read(mdi, &cnt, 4);
         if (!mdi_i) mdi_trace(mdi, dw ? dw->ind : di->ind, di != NULL, readable, cnt);
@@ -1244,7 +1268,11 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
         ib_bind(s.buf, s.off, VK_INDEX_TYPE_UINT32);
         vk.vkCmdDrawIndexed(g_cb, nout, inst, 0, di ? di->base_vertex : 0, binst);
     } else if (dw) {
-        if (ind) { VkBuffer b; VkDeviceSize o; if (!vka_addr(ind, 16, &b, &o, NULL) || (o & 3)) SKIP("indirect draw arguments at %#llx are not in placed guest RAM: skipped", (unsigned long long)ind);
+        if (mdi_max) {
+            vka_enc_stop();
+            V.mdi_arrays(g_cb, mdi_args, mdi_args_off, mdi_count, mdi_count_off, mdi_max, mdi_stride);
+            vka_enc_start(g_cb);
+        } else if (ind) { VkBuffer b; VkDeviceSize o; if (!vka_addr(ind, 16, &b, &o, NULL) || (o & 3)) SKIP("indirect draw arguments at %#llx are not in placed guest RAM: skipped", (unsigned long long)ind);
                    VRED_ONCE("indirect draws: the driver segment's base instance (c0 + 0x644) reads the record's, not the GPU's"); vk.vkCmdDrawIndirect(g_cb, b, o, 1, 16); }
         else vk.vkCmdDraw(g_cb, (uint32_t)dw->count, inst, (uint32_t)dw->first, binst);
     } else {
@@ -1259,9 +1287,18 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
             if (restart) VRED_ONCE("primitive restart with widened 8-bit indices");
         } else if (!vka_addr(di->ibuf, ind ? isz : isz * (uint64_t)(di->count > 0 ? di->count : 1), &ib, &io, NULL) || io % isz) SKIP("index buffer at %#llx is not in placed guest RAM: skipped", (unsigned long long)di->ibuf);
         ib_bind(ib, io, it);
-        if (ind) { VkBuffer b; VkDeviceSize o; if (!vka_addr(ind, 20, &b, &o, NULL) || (o & 3)) SKIP("indirect draw arguments at %#llx are not in placed guest RAM: skipped", (unsigned long long)ind);
+        if (mdi_max) {
+            vka_enc_stop();
+            V.mdi_indexed(g_cb, mdi_args, mdi_args_off, mdi_count, mdi_count_off, mdi_max, mdi_stride);
+            vka_enc_start(g_cb);
+        } else if (ind) { VkBuffer b; VkDeviceSize o; if (!vka_addr(ind, 20, &b, &o, NULL) || (o & 3)) SKIP("indirect draw arguments at %#llx are not in placed guest RAM: skipped", (unsigned long long)ind);
                    vk.vkCmdDrawIndexedIndirect(g_cb, b, o, 1, 20); }
         else vk.vkCmdDrawIndexed(g_cb, (uint32_t)di->count, inst, 0, di->base_vertex, binst);
+    }
+    if (mdi_max) {
+        static int reported;
+        if (!reported) VLOG("GPU indirect count active: Vulkan reads the draw count");
+        reported = 1;
     }
     if (mesh || ind || inst > 1)
         trace_draw(sh, ind ? 0 : (uint32_t)(dw ? dw->count : di->count),

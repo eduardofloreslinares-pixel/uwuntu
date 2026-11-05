@@ -149,6 +149,10 @@ static int init_once(void) {
 #define D(f) vk.f = (PFN_##f)vk.vkGetDeviceProcAddr(V.dev, #f);
     VKA_DEVICE_FNS(D)
 #undef D
+    if (f12.drawIndirectCount && f2.features.multiDrawIndirect && f2.features.drawIndirectFirstInstance) {
+        V.mdi_arrays = (PFN_vkCmdDrawIndirectCount)vk.vkGetDeviceProcAddr(V.dev, "vkCmdDrawIndirectCount");
+        V.mdi_indexed = (PFN_vkCmdDrawIndexedIndirectCount)vk.vkGetDeviceProcAddr(V.dev, "vkCmdDrawIndexedIndirectCount");
+    }
     if (!vk.vkMapMemory2KHR) vk.vkMapMemory2KHR = (PFN_vkMapMemory2KHR)vk.vkGetDeviceProcAddr(V.dev, "vkMapMemory2");   // core in 1.4
     if (!vk.vkUnmapMemory2KHR) vk.vkUnmapMemory2KHR = (PFN_vkUnmapMemory2KHR)vk.vkGetDeviceProcAddr(V.dev, "vkUnmapMemory2");
     if (!vk.vkMapMemory2KHR || !vk.vkUnmapMemory2KHR) V.placed = V.placed_range = 0;
