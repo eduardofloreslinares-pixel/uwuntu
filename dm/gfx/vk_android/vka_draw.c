@@ -940,12 +940,85 @@ static void trace_draw(vka_shader *const sh[], uint32_t count, uint32_t instance
          count, instances, base, (unsigned long long)indirect);
 }
 
+// DM_VK_MDI_TRACE=<first replay frame>: sample up to four groups in each
+// of eight frames. Copy before the CPU gate, including rejected groups.
+enum { MDI_SAMPLES = 32, MDI_WORDS = 6 };
+typedef struct {
+    uint64_t frame, addr, indirect;
+    uint32_t cpu, slot;
+    int readable, indexed, has_args;
+} mdi_sample;
+static vka_span g_mdi_buffer;
+static mdi_sample g_mdi_samples[MDI_SAMPLES];
+static unsigned g_mdi_next, g_mdi_committed;
+
+static void mdi_trace_done(void *arg) {
+    const mdi_sample *s = arg;
+    if (vka_hung()) return;
+    uint32_t words[MDI_WORDS];
+    memcpy(words, g_mdi_buffer.ptr + s->slot * sizeof words, sizeof words);
+    VLOG("mdi trace frame=%llu group=%u addr=%#llx cpu_valid=%d cpu_count=%u gpu_count=%u indirect=%#llx indexed=%d args_valid=%d elements=%u instances=%u first=%u base_vertex=%d base_instance=%u",
+         (unsigned long long)s->frame, s->slot, (unsigned long long)s->addr,
+         s->readable, s->cpu, words[0], (unsigned long long)s->indirect,
+         s->indexed, s->has_args, words[1], words[2], words[3],
+         s->indexed ? (int32_t)words[4] : 0, words[s->indexed ? 5 : 4]);
+}
+
+void vka_mdi_trace_commit(uint64_t fence, int submitted) {
+    while (g_mdi_committed < g_mdi_next) {
+        mdi_sample *s = &g_mdi_samples[g_mdi_committed++];
+        if (submitted) vka_after(fence, mdi_trace_done, s);
+    }
+}
+
+static void mdi_trace(uint64_t addr, uint64_t ind, int indexed, int readable, uint32_t cpu) {
+    static int start = -1;
+    static uint64_t last = UINT64_MAX;
+    static unsigned rows;
+    if (start < 0) {
+        const char *e = getenv("DM_VK_MDI_TRACE");
+        start = e ? atoi(e) : 0;
+        if (start < 0) start = 0;
+    }
+    if (!start || g_mdi_next == MDI_SAMPLES) return;
+    uint64_t frame = vka_trace_replay_frame();
+    if (frame < (uint64_t)start || frame - (uint64_t)start >= 8) return;
+    if (last != frame) { last = frame; rows = 0; }
+    if (rows == 4) return;
+    VkBuffer src, args;
+    VkDeviceSize off, arg_off;
+    if (!vka_addr(addr, 4, &src, &off, NULL) || (off & 3)) return;
+    unsigned arg_bytes = indexed ? 20 : 16;
+    int has_args = ind && vka_addr(ind, arg_bytes, &args, &arg_off, NULL) && !(arg_off & 3);
+    if (!g_mdi_buffer.buf) {
+        if (!vka_static(sizeof(uint32_t) * MDI_SAMPLES * MDI_WORDS, 4, &g_mdi_buffer)) return;
+        memset(g_mdi_buffer.ptr, 0, sizeof(uint32_t) * MDI_SAMPLES * MDI_WORDS);
+    }
+    unsigned slot = g_mdi_next++;
+    rows++;
+    g_mdi_samples[slot] = (mdi_sample){frame, addr, ind, cpu, slot, readable, indexed, has_args};
+    VkDeviceSize dst = g_mdi_buffer.off + slot * MDI_WORDS * sizeof(uint32_t);
+    vka_rp_end();
+    vka_barrier(g_cb);
+    VkBufferCopy c = {off, dst, 4};
+    vk.vkCmdCopyBuffer(g_cb, src, g_mdi_buffer.buf, 1, &c);
+    if (has_args) {
+        c = (VkBufferCopy){arg_off, dst + 4, arg_bytes};
+        vk.vkCmdCopyBuffer(g_cb, args, g_mdi_buffer.buf, 1, &c);
+    }
+}
+
 void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc, int has_sc, const p_draw *dw, const p_draw_idx *di) {
     if (!g_cb || !draws_on() || !statics()) { g_skipped++; return; }
     if (!d->inited) vka_dstate_reset(d);
     uint64_t mdi = dw ? dw->mdi_cnt : di->mdi_cnt; int mdi_i = dw ? dw->mdi_i : di->mdi_i;
-    if (mdi) { uint32_t cnt = 0; if (!cpu_read(mdi, &cnt, 4) || (uint32_t)mdi_i >= cnt) return;   // past the multi-draw's count (read now: a count the GPU writes in this submission is not seen)
-               VRED_ONCE("indirect-count multi-draws read their count on the CPU at replay"); }
+    if (mdi) {
+        uint32_t cnt = 0;
+        int readable = cpu_read(mdi, &cnt, 4);
+        if (!mdi_i) mdi_trace(mdi, dw ? dw->ind : di->ind, di != NULL, readable, cnt);
+        if (!readable || (uint32_t)mdi_i >= cnt) return;
+        VRED_ONCE("indirect-count multi-draws read their count on the CPU at replay");
+    }
     d->b.base_instance = (uint32_t)(dw ? dw->base_instance : di->base_instance);
     vka_shader *sh[VKA_NSTAGE] = {0}; unsigned bad = 0;
     PT(0);

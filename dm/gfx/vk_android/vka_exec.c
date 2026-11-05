@@ -307,13 +307,14 @@ static inline void chunk_check(void) {
     if (cp > 0 && in >= (uint64_t)cp && vka_rp_open_for(&S.rt, S.has_rt)) { vka_rp_end(); chunk(); }
 }
 static uint64_t g_cur_fence;   // the fence of the submission being replayed, reserved before it (vka_worker.c); 0 = reserved at its commit
+void vka_mdi_trace_commit(uint64_t fence, int submitted);
 uint64_t vka_rp_sub_commit(uint64_t reserved) {
     uint64_t fence = reserved ? reserved : vka_fence_next(); g_cur_fence = 0;
     int tail = 0;   // counted for the tail floor (DM_VK_GPU_FLOOR_AUTO=2): given back by the span op when it completes
     if (g_cb && g_stat_draws > g_sub_draws0) { int vka_floor_tail_add(void); tail = vka_floor_tail_add(); post((pop){3, 0, (uint32_t)tail, 0, g_job_frame_set ? g_job_frame : g_frame}); }   // the frame's span at the end of this submission with draws (post_run)
     pop *ops = g_npost ? malloc((size_t)g_npost * sizeof *ops) : NULL; if (ops) memcpy(ops, g_post, (size_t)g_npost * sizeof *ops);
     int n = g_npost; g_npost = 0;
-    if (!g_cb) { vka_fence_cpu(fence, ops, n, post_run); return fence; }
+    if (!g_cb) { vka_mdi_trace_commit(fence, 0); vka_fence_cpu(fence, ops, n, post_run); return fence; }
     vka_rp_end();
     vka_tex_writeback(g_cb);   // linear textures the GPU wrote, back into their storage for the CPU
     VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT};
@@ -330,6 +331,7 @@ uint64_t vka_rp_sub_commit(uint64_t reserved) {
     vka_up_flush(); vka_up_throttle();   // before the submission that may use what it made
     if (!r) r = vka_submit(g_cb, fence, 0, NULL, NULL, NULL, VK_NULL_HANDLE);
     g_slot[(g_slot_i - 1) % NSLOT].fence = fence;
+    vka_mdi_trace_commit(fence, !r);
     if (vka_nan_on()) vka_nan_commit(fence);
     vka_scratch_retire(fence);
     if (r) {
