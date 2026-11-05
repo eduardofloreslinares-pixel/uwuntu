@@ -53,11 +53,14 @@
 # Usage: shader_split.py <RomFS dir> <ExeFS main> <output package dir> <output map> <output answer table> [<output pair table> [<output pipeline pair table (pso_pairs.tsv)> [<DLC RomFS dirs, comma-separated>]]]   Environment J=concurrency (default 8)
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
+#   A RomFS or main may be in a NUP file (android/NUP.md): `game.nup:update/458752/romfs` and `game.nup:update/458752/exefs/main`, read in place through romfs.py; a RomFS given
+#   as `game.nup` or `game.nup:<selector>` is that package's romfs (the highest update's, else the base's, for a bare file)
 #   Environment DM_SPLIT_RESUME=<dir>: the scan resumes by file (ScanCache): a split stopped part way (the phone's thermal or battery pauses, a kill, a reboot) scans again only the files it had not finished
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
 import base64, collections, concurrent.futures as cf, hashlib, json, os, pickle, re, struct, subprocess, sys, time, zlib
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../tools'))
 from romfs import os, open, is_image
+import nup
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 from profile_guess import glsl_sources
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
@@ -2913,10 +2916,12 @@ def pooled(ex, jobs, total, start=0, chunk=1, cache=None):
                 if done == start + len(jobs) or time.monotonic() - shown >= 0.5: print(f'progress: {done}/{total}', flush=True); shown = time.monotonic()
         else:
             futures = {ex.submit(scan_batch, b): first for first, b in todo}
-            for f in cf.as_completed(futures):   # each result into the cache as it comes (as_completed waits on all the futures once, not once a result)
-                kept[futures[f]] = r = f.result(); cache.add(futures[f], r); done += len(r)
-                if time.monotonic() - shown >= 0.5: print(f'progress: {done}/{total}', flush=True); shown = time.monotonic()
-            if futures: print(f'progress: {done}/{total}', flush=True)
+            pending = set(futures)
+            while pending:   # a timed wait, not as_completed: the count is shown every half second even while one slow range is all that is left
+                finished, pending = cf.wait(pending, timeout=0.5, return_when=cf.FIRST_COMPLETED)
+                for f in finished:   # each result into the cache as it comes
+                    kept[futures[f]] = r = f.result(); cache.add(futures[f], r); done += len(r)
+                if not pending or time.monotonic() - shown >= 0.5: print(f'progress: {done}/{total}', flush=True); shown = time.monotonic()
     finally:
         cache.flush()   # also on an interrupt (KeyboardInterrupt): what finished is kept
     return [r for first, _ in batches for r in kept[first]]
@@ -2929,7 +2934,8 @@ def main():
     dlc_v = sys.argv[8].split(',') if len(sys.argv) > 8 and sys.argv[8] else []   # extra content has no ExeFS; each root is the extracted DLC index
     # Several versions (base game + update): the RomFS and main arguments are comma-separated and paired one to one; the output is their union (keys are content hashes, shaders shared by versions appear once).
     # The first version's source column is unchanged; later versions are prefixed with their workspace directory name (e.g. v327680): /v327680/Shader/…, main@v327680. They sort after the first version, so existing rows keep their package indices.
-    romfs_v, main_v = romfs_l.split(','), main_l.split(',')
+    romfs_v, main_v = [nup.default_romfs(r) for r in romfs_l.split(',')], main_l.split(',')
+    dlc_v = [nup.default_romfs(r) for r in dlc_v]
     if len(romfs_v) != len(main_v): red(f'{len(romfs_v)} RomFS and {len(main_v)} main: they must pair one to one')
     files, results, common, dumps = [], [], None, []
     for i, (romfs, mainnso) in enumerate(zip(romfs_v, main_v)):

@@ -135,14 +135,10 @@ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char 
         LOGI("hook_android_dlopen_ext: loading custom driver: %s%s", hook_params->customDriverDir.c_str(), hook_params->customDriverName.c_str());
         void *handle{android_dlopen_ext(hook_params->customDriverName.c_str(), flags, &newExtinfo)};
         if (!handle) {
-            const char *error = dlerror();
-            LOGI("hook_android_dlopen_ext: hook failed: failed to load custom driver: %s!", error ? error : "unknown error");
-            fprintf(stderr, "[RED] custom Vulkan driver %s failed: %s; trying system driver\n",
-                    hook_params->customDriverName.c_str(), error ? error : "unknown error");
+            LOGI("hook_android_dlopen_ext: hook failed: failed to load custom driver: %s!", dlerror());
             return fallback();
         }
 
-        fprintf(stderr, "[vk] custom Vulkan driver loaded: %s%s\n", hook_params->customDriverDir.c_str(), hook_params->customDriverName.c_str());
         return handle;
     } else {
         LOGI("hook_android_dlopen_ext: loading default driver: %s", filename);

@@ -20,10 +20,6 @@ uint32_t vka_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropert
     return UINT32_MAX;
 }
 
-static PFN_vkGetPhysicalDeviceMemoryProperties2 budget_query;
-static _Atomic int budget_pressure;
-int vka_memory_pressure(void) { return atomic_load_explicit(&budget_pressure, memory_order_relaxed); }
-
 static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name) { for (uint32_t i = 0; i < n; i++) if (!strcmp(e[i].extensionName, name)) return 1; return 0; }
 
 static void *completion_main(void *arg);
@@ -105,10 +101,6 @@ static int init_once(void) {
     if (x_mesh) dext[ndext++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
     int x_ph = has_ext(de, nde, "VK_QCOM_queue_perf_hint");
     if (x_ph) dext[ndext++] = "VK_QCOM_queue_perf_hint";
-    if (has_ext(de, nde, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
-        dext[ndext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
-        budget_query = (PFN_vkGetPhysicalDeviceMemoryProperties2)vk.vkGetInstanceProcAddr(V.inst, "vkGetPhysicalDeviceMemoryProperties2");
-    }
     free(de);
 
     // Every feature the device has, but robustness and capture-replay (they cost and nothing needs them); the shader side takes what it needs from the same device
@@ -171,7 +163,7 @@ static int init_once(void) {
     VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = x_mesh ? (void *)&pmesh : (void *)&pdr};
     vk.vkGetPhysicalDeviceProperties2(V.pd, &p2);
     VLOG("driver: %s (%s), driver ID %d, conformance %u.%u.%u.%u, driver version %#x; %s", pdr.driverName, pdr.driverInfo, pdr.driverID, pdr.conformanceVersion.major,
-         pdr.conformanceVersion.minor, pdr.conformanceVersion.subminor, pdr.conformanceVersion.patch, V.props.driverVersion, vka_driver_tag() ? "custom requested (DM_VK_DRIVER)" : "the system's");
+         pdr.conformanceVersion.minor, pdr.conformanceVersion.subminor, pdr.conformanceVersion.patch, V.props.driverVersion, vka_driver_tag() ? "custom (DM_VK_DRIVER)" : "the system's");
     V.driver_id = (int)pdr.driverID;
     { const char *e = getenv("DM_VK_GPL"); int want = !(e && !strcmp(e, "0"));   // restart only: the libraries are made with the device's pipelines
       V.gpl = want && x_gpl && fgpl.graphicsPipelineLibrary && pgpl.graphicsPipelineLibraryFastLinking;
@@ -421,29 +413,11 @@ void vka_mem_grew(uint64_t bytes) {
 // Kept, every block stayed for the process's life: Mario Kart World 1.8.0's boot uploads (levels of up to 144 MiB, each in a block of its size) left 1.4 GB of scratch
 // before its first frame, and the phone's low-memory killer stopped it
 static void sblk_trim(uint64_t done, uint64_t udone) {
-    // Cache the driver's moving heap budget under g_smu. As in Lichii, leave
-    // headroom before the driver runs out and reclaim only completed resources.
-    static uint64_t checked;
-    uint64_t now = now_ns();
-    if (budget_query && now - checked >= 1000000000ull) {
-        checked = now;
-        VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-        VkPhysicalDeviceMemoryProperties2 props = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, &budget};
-        budget_query(V.pd, &props);
-        int tight = 0;
-        for (uint32_t i = 0; i < props.memoryProperties.memoryHeapCount; i++) {
-            VkDeviceSize cap = budget.heapBudget[i], margin = cap / 8;
-            if (margin > (1ull << 30)) margin = 1ull << 30;
-            if (cap && budget.heapUsage[i] >= cap - margin) tight = 1;
-        }
-        int prior = atomic_exchange_explicit(&budget_pressure, tight, memory_order_relaxed);
-        if (tight != prior) VLOG("memory budget pressure %s: idle staging limit %u MiB", tight ? "high" : "normal", tight ? 16u : 64u);
-    }
-    VkDeviceSize idle = 0, idle_limit = (vka_memory_pressure() ? 16u : 64u) << 20;
+    VkDeviceSize idle = 0;
     for (sblk **pp = &g_busy; *pp;) {
         sblk *b = *pp;
         int id = sblk_idle(b, done, udone);
-        if (id && (b->size > (16u << 20) || idle + b->size > idle_limit)) {
+        if (id && (b->size > (16u << 20) || idle + b->size > (64u << 20))) {
             *pp = b->next; vk.vkUnmapMemory(V.dev, b->mem); vk.vkDestroyBuffer(V.dev, b->buf, NULL); vk.vkFreeMemory(V.dev, b->mem, NULL);
             atomic_fetch_sub(&g_scratch_bytes, b->size); atomic_fetch_sub(&g_scratch_n, 1); free(b);
         } else { if (id) idle += b->size; pp = &b->next; }

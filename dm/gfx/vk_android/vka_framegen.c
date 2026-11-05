@@ -158,12 +158,6 @@ int vka_fg_frame(uint64_t serial, const int *crop, double period, uint64_t fence
         vka_fps_fg(F.state < 0 ? -1 : 0, 1);
         return 0;
     }
-    if (period > 0 && period < 2.0 / 30.0 - 0.0001) {
-        if (F.chain) teardown();
-        if (atomic_exchange(&g_state, 2) != 2) reason("%s", "on, no room for a generated frame under the 30 fps output cap");
-        vka_fps_fg(2, 1);
-        return 0;
-    }
     if (!load()) { vka_fps_fg(-1, 1); return 0; }
     // The window's frame rate: a shorter output period at once, a longer one only after it held for 2 s. DKB switches its own present interval between 1 and 2 (60 and
     // 30 fps) many times a minute, and each switch would change the panel's mode (120 <-> 60 Hz); the generated frames are paced by hold, not by the panel's rate
@@ -197,9 +191,8 @@ int vka_fg_frame(uint64_t serial, const int *crop, double period, uint64_t fence
     // as many as the refreshes in the game's own period leave room for (its requested period, not the measured interval, which a throttled game would lengthen)
     // DM_VK_FG_REFRESH_CAP=0: no cap (a driver whose display timing reports a refresh the panel does not run at)
     uint64_t rns = VKA_ENV("DM_VK_FG_REFRESH_CAP", 1) ? vka_refresh_ns() : 0; int capped = 0;
-    uint64_t output_slot_ns = rns > 33333334ull ? rns : 33333334ull;
-    if (ng && period > 0) {
-        double n = period * 1e9 / (double)output_slot_ns;   // refreshes in a game frame (60 fps on 120.46 Hz: 2.01; on 60.00 Hz: 1.00)
+    if (ng && rns && period > 0) {
+        double n = period * 1e9 / (double)rns;   // refreshes in a game frame (60 fps on 120.46 Hz: 2.01; on 60.00 Hz: 1.00)
         size_t fit = n < 1.9 ? 0 : (size_t)(n + 0.1) - 1;
         if (ng > fit) { ng = fit; capped = 1; F.pacer.issued = ng; }   // the pacer counts what was generated (its unloaded rate is measured on frames without)
     }
@@ -238,7 +231,7 @@ int vka_fg_frame(uint64_t serial, const int *crop, double period, uint64_t fence
     int st2 = ng ? 1 : 2;
     static int was_capped;
     if (atomic_exchange(&g_state, st2) != st2 || (st2 == 2 && capped != was_capped)) {
-        char why[96]; snprintf(why, sizeof why, "on, output is limited to %.0f fps: no slot left for a generated frame", 1e9 / (double)output_slot_ns);
+        char why[96]; snprintf(why, sizeof why, "on, the display runs at %.0f Hz: no refresh left for a generated frame", rns ? 1e9 / (double)rns : 0.0);
         reason("%s", st2 == 1 ? "generating" : capped ? why : "on, waiting for a steady frame rate");
         static int ncap; if (st2 == 2 && capped && ncap++ < 4) VLOG("frame generation: not generating, %s (game frame period %.1f ms)", why + 4, period * 1e3);
         static int logged; if (st2 == 1 && !logged) { logged = 1; VLOG("frame generation: first %zu generated frame(s), game frame interval %.1f ms", ng, interval * 1e3); }

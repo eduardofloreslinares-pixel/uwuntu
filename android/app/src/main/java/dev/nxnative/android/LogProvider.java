@@ -1,8 +1,5 @@
 package dev.nxnative.android;
 
-import android.app.Activity;
-import android.content.ClipData;
-import android.content.Intent;
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
@@ -14,9 +11,6 @@ import android.provider.OpenableColumns;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Comparator;
 
@@ -26,12 +20,6 @@ public final class LogProvider extends ContentProvider {
 
     static File dir(Context c) {
         File d = new File(c.getExternalFilesDir(null), "logs");
-        d.mkdirs();
-        return d;
-    }
-
-    static File exportDir(Context c) {
-        File d = new File(c.getCacheDir(), "log_exports");
         d.mkdirs();
         return d;
     }
@@ -48,31 +36,10 @@ public final class LogProvider extends ContentProvider {
 
     static Uri uri(File log) { return Uri.parse("content://" + AUTHORITY + "/" + Uri.encode(log.getName())); }
 
-    static void share(Activity activity, File log) {
-        Uri uri = uri(log);
-        Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain")
-                .putExtra(Intent.EXTRA_STREAM, uri).putExtra(Intent.EXTRA_SUBJECT, "Banana Native " + log.getName());
-        send.setClipData(ClipData.newRawUri(log.getName(), uri));
-        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        activity.startActivity(Intent.createChooser(send, "Share " + log.getName()));
-    }
-
-    static String tail(File log, int maxLines) throws IOException {
-        try (RandomAccessFile r = new RandomAccessFile(log, "r")) {
-            long n = r.length(), start = Math.max(0, n - 8192);
-            byte[] bytes = new byte[(int) (n - start)];
-            r.seek(start);
-            r.readFully(bytes);
-            String[] lines = new String(bytes, StandardCharsets.UTF_8).split("\n");
-            int first = Math.max(start > 0 && lines.length > 1 ? 1 : 0, lines.length - maxLines);
-            return String.join("\n", Arrays.copyOfRange(lines, first, lines.length)).trim();
-        }
-    }
-
     private File file(Uri uri) throws FileNotFoundException {
         String n = uri.getLastPathSegment();
         if (n == null || n.contains("/") || !n.endsWith(".log")) throw new FileNotFoundException(String.valueOf(uri));
-        File f = new File(n.startsWith("prepare-") ? exportDir(getContext()) : dir(getContext()), n);
+        File f = new File(dir(getContext()), n);
         if (!f.isFile()) throw new FileNotFoundException(f.getPath());
         return f;
     }

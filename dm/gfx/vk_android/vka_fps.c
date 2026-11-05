@@ -15,11 +15,7 @@ void vka_fps_fg(int state, int mult) { atomic_store(&g_fg_state, state); atomic_
 void vka_fps_note(int shown, int generated) {
     if (!shown) return;
     uint64_t t = now_ns();
-    if (!g_win_t0) {
-        g_win_t0 = t;
-        if (!generated) g_last_base = t;
-        return;
-    }
+    if (!g_win_t0) g_win_t0 = t;
     g_out_n++;
     if (!generated) {
         if (g_last_base && t - g_last_base < 1000000000ull) g_base_ns_sum += t - g_last_base;

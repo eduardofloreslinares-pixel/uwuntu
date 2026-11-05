@@ -6,7 +6,7 @@
 //   DM_VK_DRIVER=<folder>   the folder holds the driver and its meta.json ("libraryName": the .so to load), as the driver zips Eden and others use
 //   DM_VK_DRIVER=<path>.so  that library (its folder must hold whatever else it loads)
 //   unset, empty, "system"  the system libvulkan.so, as before
-// DM_VK_HOOKDIR overrides where the hook libraries are (by default the folder libnxhost.so was loaded from). Restart only (vka_ctl.c g_restart).
+// DM_VK_HOOKDIR overrides where the hook libraries are (by default the folder libnxhost.so was loaded from, inside the APK). Restart only (vka_ctl.c g_restart).
 // A driver that fails to load falls back to the system one, with a [RED] line saying why.
 #if defined(__ANDROID__)
 #include "vka.h"
@@ -71,7 +71,7 @@ static void *driver_open(void) {
     char hook[1024];
     const char *hd = getenv("DM_VK_HOOKDIR");
     if (hd && *hd) snprintf(hook, sizeof hook, "%s%s", hd, hd[strlen(hd) - 1] == '/' ? "" : "/");
-    else {   // adb tools can load libnxhost.so beside the extracted hooks
+    else {   // the folder libnxhost.so came from: inside the APK ("…/base.apk!/lib/arm64-v8a"), where the hook libraries are beside it; the linker searches zip paths too
         Dl_info di; const char *sl;
         if (!dladdr((void *)vka_driver_open, &di) || !di.dli_fname || !(sl = strrchr(di.dli_fname, '/'))) { VRED("DM_VK_DRIVER: cannot tell where libnxhost.so is: the system driver is used"); return NULL; }
         snprintf(hook, sizeof hook, "%.*s/", (int)(sl - di.dli_fname), di.dli_fname);
@@ -84,7 +84,7 @@ static void *driver_open(void) {
     const char *base = dir + strlen(dir) - 1; while (base > dir && base[-1] != '/') base--;   // the folder's name, else the library's
     char b[128]; snprintf(b, sizeof b, "%.*s", (int)(dir + strlen(dir) - 1 - base), base);
     set_tag(b[0] ? b : name);
-    VLOG("custom GPU driver requested: %s%s (hooks in %s), pipeline cache vk_pipelines-%s.bin", dir, name, hook, g_tag);
+    VLOG("custom GPU driver: %s%s (hooks in %s), pipeline cache vk_pipelines-%s.bin", dir, name, hook, g_tag);
     return lib;
 }
 #endif

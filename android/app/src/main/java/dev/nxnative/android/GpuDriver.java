@@ -57,7 +57,7 @@ final class GpuDriver {
         Arrays.sort(l);
         for (File d : l) {
             JSONObject m = meta(new File(d, "meta.json"));
-            if (m != null && validLibrary(d, m.optString("libraryName", ""))) out.add(new Info(d, m));
+            if (m != null && new File(d, m.optString("libraryName", "-")).isFile()) out.add(new Info(d, m));
         }
         return out;
     }
@@ -95,9 +95,8 @@ final class GpuDriver {
     /** The host's switch for a run of a game (before env.txt, whose lines win) and a line for the log */
     static String env(Context c, String titleId, List<String> env) {
         Info i = selected(c, titleId);
-        env.add("DM_VK_HOOKDIR=" + c.getApplicationInfo().nativeLibraryDir);
         if (i == null) return "GPU driver: system";
-        env.add("DM_VK_DRIVER=" + new File(i.dir, i.library).getPath());
+        env.add("DM_VK_DRIVER=" + i.dir.getPath());
         return "GPU driver: " + i.label() + " (" + i.dir + ")";
     }
 
@@ -105,11 +104,6 @@ final class GpuDriver {
         if (!f.isFile() || f.length() > 64 * 1024) return null;
         try (InputStream in = new FileInputStream(f)) { return new JSONObject(new String(in.readAllBytes(), StandardCharsets.UTF_8)); }
         catch (IOException | JSONException | SecurityException e) { return null; }
-    }
-
-    private static boolean validLibrary(File dir, String name) {
-        return name.endsWith(".so") && name.equals(new File(name).getName())
-                && new File(dir, name).isFile();
     }
 
     private static String safe(String s) {
@@ -142,7 +136,7 @@ final class GpuDriver {
             JSONObject m = meta(new File(tmp, "meta.json"));
             if (m == null) throw new IOException("no meta.json in the zip: not a driver package");
             String lib = m.optString("libraryName", "");
-            if (!validLibrary(tmp, lib)) throw new IOException("meta.json names " + (lib.isEmpty() ? "no library" : lib + ", which is not in the zip"));
+            if (lib.isEmpty() || lib.contains("/") || !new File(tmp, lib).isFile()) throw new IOException("meta.json names " + (lib.isEmpty() ? "no library" : lib + ", which is not in the zip"));
             String name = safe(m.optString("name", fallbackName));
             if (name.isEmpty()) name = safe(fallbackName);
             if (name.isEmpty()) name = "driver";

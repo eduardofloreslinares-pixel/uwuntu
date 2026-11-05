@@ -376,9 +376,8 @@ static int present_one(const pq_item *it) {
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &ti, .waitSemaphoreCount = it->fence ? 2 : 1, .pWaitSemaphores = ws, .pWaitDstStageMask = st,
                        .commandBufferCount = 1, .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &g_sdone[idx]};
     if (!it->fence) ti.waitSemaphoreValueCount = 1;
-    const double capped_period = it->period > 1.0 / 30.0 ? it->period : 1.0 / 30.0;
-    frame_rate(capped_period); refresh_poll();
-    uint64_t want = 0, period = (uint64_t)((it->hold > capped_period ? it->hold : capped_period) * 1e9);
+    frame_rate(it->period); refresh_poll();
+    uint64_t want = 0, period = (uint64_t)((it->hold > 0 ? it->hold : it->period) * 1e9);
     if (g_refresh_ns && period > g_refresh_ns * 3 / 2) {   // hold each image for its present period: the panel refreshes faster than the game presents
         uint64_t now = now_ns(); want = g_last_desired ? g_last_desired + period : now;
         if (want < now) want = now;
@@ -387,12 +386,6 @@ static int present_one(const pq_item *it) {
     VkPresentTimeGOOGLE pt = {(uint32_t)it->ticket, want};
     VkPresentTimesInfoGOOGLE ptv = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, .swapchainCount = 1, .pTimes = &pt};
     VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = V.display_timing ? &ptv : NULL, .waitSemaphoreCount = 1, .pWaitSemaphores = &g_sdone[idx], .swapchainCount = 1, .pSwapchains = &g_swap, .pImageIndices = &idx};
-    // Use a monotonic deadline on the present thread, including generated frames.
-    // Missed deadlines are discarded so a slow frame cannot trigger a burst.
-    static uint64_t last_present;
-    const uint64_t min_period = 33333334ull;
-    uint64_t due = last_present + min_period;
-    if (now_ns() < due) plat_wait_until(due);
     pthread_mutex_lock(&V.qmu);
     // Never a wait for a value no earlier submission signals: the queue runs its batches in order, so the copy would wait for a submission queued behind it, and neither ever
     // runs (mtl_present takes vka_fence_queued for that; this holds it under the queue lock)
@@ -404,7 +397,6 @@ static int present_one(const pq_item *it) {
       if (mode && it->ticket == (uint64_t)at && it->fence) { wv[1] = mode == 1 ? vka_fence_last() + 1 : V.tl_queued + 1000000000ull;
           VRED("DM_VK_TEST_HANG=%d: present ticket %llu waits for fence %llu (%llu handed to the queue)", mode, (unsigned long long)it->ticket, (unsigned long long)wv[1], (unsigned long long)V.tl_queued); } }
     r = vka_hung() ? VK_ERROR_DEVICE_LOST : vk.vkQueueSubmit(V.q, 1, &si, g_fr[k].fence);
-    if (!r) last_present = now_ns();
     VkResult pr = r ? r : vk.vkQueuePresentKHR(V.q, &pi);
     pthread_mutex_unlock(&V.qmu);
     g_fr[k].held = im;
