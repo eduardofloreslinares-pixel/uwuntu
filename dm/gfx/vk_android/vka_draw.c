@@ -913,6 +913,17 @@ void vka_draw_prof(char *b, size_t n, double draws) {
 }
 // DM_VK_TREE_TRACE=<first replay frame>: trace eight consecutive frames.
 uint64_t vka_trace_replay_frame(void);
+
+// One capture per launch. The start belongs to the replay thread, so the
+// draw log and GPU readback use the same frame numbers.
+static uint64_t tree_live_start = UINT64_MAX;
+static int tree_live_frame(uint64_t frame) {
+    if (tree_live_start == UINT64_MAX && VKA_ENV("DM_VK_TREE_CAPTURE", 0)) {
+        tree_live_start = frame;
+        VLOG("tree capture armed at replay frame %llu", (unsigned long long)frame);
+    }
+    return tree_live_start != UINT64_MAX && frame - tree_live_start < 8;
+}
 static void trace_draw(vka_shader *const sh[], uint32_t count, uint32_t instances,
                        uint32_t base, uint64_t indirect, int mesh, int indexed) {
     static int start = -1;
@@ -923,16 +934,17 @@ static void trace_draw(vka_shader *const sh[], uint32_t count, uint32_t instance
         start = value ? atoi(value) : 0;
         if (start < 0) start = 0;
     }
-    if (!start) return;
     uint64_t frame = vka_trace_replay_frame();
-    if (frame < (uint64_t)start || frame - (uint64_t)start >= 8) return;
+    int live = tree_live_frame(frame);
+    if (!live && (!start || frame < (uint64_t)start || frame - (uint64_t)start >= 8)) return;
     if (frame != last) {
         last = frame;
         rows = 0;
         VLOG("tree trace frame %llu begins", (unsigned long long)frame);
     }
-    if (rows >= 128) {
-        if (rows++ == 128) VLOG("tree trace frame %llu truncated", (unsigned long long)frame);
+    unsigned limit = live ? 512 : 128;
+    if (rows >= limit) {
+        if (rows++ == limit) VLOG("tree trace frame %llu truncated", (unsigned long long)frame);
         return;
     }
     VLOG("tree trace frame=%llu draw=%u kind=%s vs=%016llx fs=%016llx task=%016llx mesh=%016llx count=%u instances=%u base=%u indirect=%#llx",
@@ -944,7 +956,7 @@ static void trace_draw(vka_shader *const sh[], uint32_t count, uint32_t instance
 
 // DM_VK_MDI_TRACE=<first replay frame>: sample up to four groups in each
 // of eight frames. Copy before the CPU gate, including rejected groups.
-enum { MDI_SAMPLES = 32, MDI_WORDS = 6 };
+enum { MDI_SAMPLES = 64, MDI_WORDS = 6 };
 typedef struct {
     uint64_t frame, addr, indirect;
     uint32_t cpu, slot;
@@ -982,11 +994,12 @@ static void mdi_trace(uint64_t addr, uint64_t ind, int indexed, int readable, ui
         start = e ? atoi(e) : 0;
         if (start < 0) start = 0;
     }
-    if (!start || g_mdi_next == MDI_SAMPLES) return;
+    if (g_mdi_next == MDI_SAMPLES) return;
     uint64_t frame = vka_trace_replay_frame();
-    if (frame < (uint64_t)start || frame - (uint64_t)start >= 8) return;
+    int live = tree_live_frame(frame);
+    if (!live && (!start || frame < (uint64_t)start || frame - (uint64_t)start >= 8)) return;
     if (last != frame) { last = frame; rows = 0; }
-    if (rows == 4) return;
+    if (rows >= (live ? 8u : 4u)) return;
     VkBuffer src, args;
     VkDeviceSize off, arg_off;
     if (!vka_addr(addr, 4, &src, &off, NULL) || (off & 3)) return;
@@ -1034,6 +1047,8 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
             if (mdi_i) return;   // already covered by the first record
             mdi_max = max;
             mdi_stride = stride;
+            if (tree_live_frame(vka_trace_replay_frame()))
+                mdi_trace(mdi, address, di != NULL, 0, 0);
         } else {
             VRED_ONCE("GPU indirect count unavailable for a group; using the CPU fallback");
         }
