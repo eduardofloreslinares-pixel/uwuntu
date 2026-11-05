@@ -778,6 +778,15 @@ def run_batch(batch):
     for key in batch:
         name, k = loc[key]
         jobs[key], c1s[key] = NS['job_for'](key, name, _rec(name, k), bd)
+        # MKW 1.8.0 ships one compute shader with an SPH-like prefix.
+        # Keep the original guest key and constants; strip only the translator input.
+        if key == '078997bf631992c5' and jobs[key]['stage'] == 'cs' and jobs[key].get('arch') == 'sm86':
+            path = jobs[key]['code']
+            with open(path, 'rb') as f:
+                code = f.read()
+            if len(code) >= 0x90 and len(code) % 16 == 0 and code.startswith(bytes.fromhex('81040c02')):
+                with open(path, 'wb') as f:
+                    f.write(code[0x80:])
         jobs[key].update(ANSWERS)
         if STAGE_OF[key] == 'ms': jobs[key]['gl_depth_spec'] = VK['SPEC_GL_DEPTH']
     r = translate([jobs[k] for k in batch], bd, batch[0])
