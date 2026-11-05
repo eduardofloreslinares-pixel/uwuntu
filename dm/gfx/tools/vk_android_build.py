@@ -699,7 +699,11 @@ def write_library(results):
 ANSWERS = {'subgroup_size': VK['SUBGROUP_SIZE'], 'ssbo_align': VK['SSBO_ALIGN'], 'gs_passthrough': False, 'shared_max': VK['SHARED_MAX']}
 keys = NS['build_keys'](want, loc, PAIRS) if want else sorted(loc)
 NJ = int(os.environ.get('J', '8')); BATCH = max(1, int(os.environ.get('DMSH_VK_BATCH', '64')))
-STAGE_OF = {k: loc[k][0][:2] for k in keys}   # the package file's name gives the stage (dmsh_build.py job_for)
+# MKW 1.8.0's control record tags this program as compute, but its SPH
+# and ALD/AST instructions describe a vertex shader that writes position.
+STAGE_OF = {k: loc[k][0][:2] for k in keys}
+if GAME.id == '0400C3F00006E000' and '078997bf631992c5' in STAGE_OF:
+    STAGE_OF['078997bf631992c5'] = 'vs'
 ORDER = [k for k in keys if STAGE_OF[k] != 'vs'] + [k for k in keys if STAGE_OF[k] == 'vs']   # pixel shaders first: their inputs pad their vertex shaders' outputs
 RAW = zstd is None or os.environ.get('DMSH_VK_RAW') == '1'
 RES = os.environ.get('DMSH_VK_RESULTS') or os.path.join(out, 'results'); os.makedirs(RES, exist_ok=True)
@@ -874,7 +878,11 @@ def run_batch(batch):
     bd = tempfile.mkdtemp(prefix='b_', dir=w); jobs, c1s = {}, {}
     for key in batch:
         name, k = loc[key]
-        jobs[key], c1s[key] = NS['job_for'](key, name, _rec(name, k), bd)
+        stage = STAGE_OF[key]
+        jobs[key], c1s[key] = NS['job_for'](key, stage + name[2:], _rec(name, k), bd)
+        if stage != name[:2] and name[:2] == 'cs':
+            jobs[key].pop('local', None)
+            jobs[key].pop('shared', None)
         jobs[key].update(ANSWERS)
         if STAGE_OF[key] == 'ms': jobs[key]['gl_depth_spec'] = VK['SPEC_GL_DEPTH']
     r = translate([jobs[k] for k in batch], bd, batch[0])
